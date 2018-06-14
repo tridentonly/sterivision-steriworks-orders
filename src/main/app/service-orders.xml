@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:tls="http://www.mulesoft.org/schema/mule/tls" xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd">
+    <sfdc:config name="Salesforce__Basic_Authentication" username="hemanth.gadde@stericycle.com.sfdcdev1" password="Indiaindia_9" url="https://test.salesforce.com/services/Soap/u/37.0" doc:name="Salesforce: Basic Authentication" disableSessionInvalidation="true"/>
+    <http:request-config name="HTTP_Request_Configuration" host="192.81.100.75" port="50705" basePath="V1" doc:name="HTTP Request Configuration" protocol="HTTPS" connectionIdleTimeout="180000">
+        <tls:context>
+            <tls:trust-store insecure="true"/>
+        </tls:context>
+    </http:request-config>
+    <file:connector name="File" autoDelete="true" outputAppend="true" streaming="true" validateConnections="true" doc:name="File"/>
+    <flow name="service-ordersFlow">
+        <poll doc:name="Poll">
+            <fixed-frequency-scheduler frequency="10" timeUnit="MINUTES"/>
+            <logger message="Started" level="INFO" doc:name="Logger"/>
+        </poll>
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Customer_Account__c,Generator_Account__c,SVMXC_Generator_Number__c,Id,Name,Purchase_Order__c,Ready_to_be_Invoiced__c,Revenue_Location__c,SVMXC__Completed_Date_Time__c,SVMXC__Order_Status__c,RebilledWorkOrder__c FROM SVMXC__Service_Order__c WHERE (Billing_Ready_For_Steriworks__c = true and id='a2c22000000AWNg' )" doc:name="Salesforce"/>
+        <set-payload value="#[org.apache.commons.collections.IteratorUtils.toList(payload)]" doc:name="Set Payload"/>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-variable variableName="orders"><![CDATA[%dw 1.0
+%output application/java
+---
+payload]]></dw:set-variable>
+        </dw:transform-message>
+        <logger message="Orders fetched from SFDC  : #[flowVars.orders[0].Name]" level="INFO" doc:name="Logger"/>
+        <foreach collection="#[flowVars.orders]" doc:name="For Each">
+            <set-variable variableName="messageRootVar" value="#[payload]" doc:name="Variable"/>
+            <enricher target="#[flowVars.account]" doc:name="Message Enricher">
+                <flow-ref name="service-ordersSub_Flow_Account" doc:name="service-ordersSub_Flow_Account"/>
+            </enricher>
+            <choice doc:name="Choice">
+                <when expression="#[flowVars.account.size()&gt;0]">
+                    <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Bill_Qty__c,Manifest_Barcode__c,SVMX_PS_Profile__c,SVMXC__Product__c,Bill_UOM__c,Container_Qty__c,Id,Item_Description__c,Name,Preview_Billing_System_Response__c,Preview_Billing_System_Status__c,Preview_Last_Modified__c,Price_Book_Entry__c,Processed_As_Item__c,SVMXC__Actual_Price2__c,Total_Quantity_11__c FROM SVMXC__Service_Order_Line__c WHERE SMAX_PS_Work_Order_Number__c = '#[payload.Name]'" doc:name="Salesforce"/>
+                    <set-payload value="#[org.apache.commons.collections.IteratorUtils.toList(payload)]" doc:name="Set Payload"/>
+                    <set-variable variableName="soLinesResult" value="#[payload]" doc:name="soLinesResult"/>
+                    <flow-ref name="fetch-product-details-by-id" doc:name="Flow Reference - Fetch product details"/>
+                    <flow-ref name="revenue-location-details" doc:name="Flow Reference - Revenue Location"/>
+                    <dw:transform-message doc:name="Transform Message" metadata:id="b304c2e4-e5b0-4b09-8e30-5f22b9afac91">
+                        <dw:set-payload><![CDATA[%dw 1.0
+%output application/json
+---
+flowVars.soLinesResult map ((lines , indexOfAccount) -> {
+	
+	"CustomerNumber": flowVars.account[0].Dynamics_AX_Customer_Number__c ,
+    //"CustomerNumber":'00106315',
+    "ExternalSiteNumber": flowVars.orders[0].SVMXC_Generator_Number__c ,
+    "PONumber": "po" ,
+    "ExternalServiceOrderNumber": "eson011",
+    "ServiceOrderNumber": flowVars.orders[0].Name,
+    "ExternalServiceOrderLineNumber": "esoln011",
+    "ServiceDocumentNumber":lines.Manifest_Barcode__c ,
+    "WasteProfileNumber":lines.SVMX_PS_Profile__c ,
+    "ServiceDate": flowVars.orders[0].SVMXC__Completed_Date_Time__c ,
+    "SvcCode": flowVars.productDetails[0].Name,
+    "Description": lines.Item_Description__c,
+    "UnitPrice": lines.SVMXC__Actual_Price2__c,
+    "MixedWasteFlag": 0,
+    "ShippingQuantity": lines.Total_Quantity_11__c ,
+    "TaxCategory": ".",
+    "BilledQuantity": lines.Bill_Qty__c,
+    "BilledUOM": lines.Bill_UOM__c ,
+    "ShippingWeight": lines.Total_Quantity_11__c ,
+    "LocationDimension": flowVars.revenueLocation[0].Accounting_Location__c,
+    "EnergyAndInsurance": flowVars.account.E_I__c ,
+	//for this  1 0r 2 based on the status, rebilled workorder feild null then print 1 and 
+	//if rebillWorkorder is not null print 2
+	"ServiceOrderType": 1 when flowVars.orders[0].RebilledWorkOrder__c == null otherwise 2
+})]]></dw:set-payload>
+                    </dw:transform-message>
+                    <logger message="Request to Steriworks :  #[payload]" level="INFO" doc:name="Logger"/>
+                    <http:request config-ref="HTTP_Request_Configuration" path="AddServiceOrders" method="POST" doc:name=" HTTP Steriworks">
+                        <http:request-builder>
+                            <http:header headerName="Content-Type" value="application/json"/>
+                            <http:header headerName="X-SDS-Culture" value="en-US"/>
+                            <http:header headerName="X-SDS-User" value="rlourenco"/>
+                            <http:header headerName="X-SDS-CompanyCode" value="910"/>
+                            <http:header headerName="Accept" value="application/json"/>
+                        </http:request-builder>
+                    </http:request>
+                    <object-to-string-transformer doc:name="Object to String"/>
+                    <logger message="Steriworks Response : #[payload]" level="INFO" doc:name="Logger"/>
+                    <choice doc:name="Choice">
+                        <when expression="#[message.inboundProperties['http.status'] == '201']">
+                            <logger message="Success" level="INFO" doc:name="Logger"/>
+                            <dw:transform-message doc:name="Transform Message">
+                                <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+[{
+	Id: flowVars.orders[0].Id,
+	// Billing_Ready_For_Steriworks__c : false,
+	Preview_Billing_System_Status__c: 'Created'
+}]]]></dw:set-payload>
+                            </dw:transform-message>
+                            <sfdc:update config-ref="Salesforce__Basic_Authentication" type="SVMXC__Service_Order__c" doc:name="Salesforce">
+                                <sfdc:objects ref="#[payload]"/>
+                            </sfdc:update>
+                            <logger message="Update Order Response  : #[payload]" level="INFO" doc:name="Logger"/>
+                            <dw:transform-message doc:name="Transform Message">
+                                <dw:set-payload><![CDATA[%dw 1.0
+%output application/csv
+---
+[{
+	"Order Number": flowVars.orders[0].Name,
+	"Status" : "Success",
+	"Error": "No Error"
+}]]]></dw:set-payload>
+                            </dw:transform-message>
+                            <file:outbound-endpoint path="D:\Upwork\hemanth\service_order\op" outputPattern="#[server.dateTime.format('yyMMddHHmmssZ')].csv" connector-ref="File" responseTimeout="10000" doc:name="File" metadata:id="c0508b35-fa89-4e0c-8f44-b4e390ffdda8"/>
+                        </when>
+                        <otherwise>
+                            <logger message="Failed" level="INFO" doc:name="Logger"/>
+                        </otherwise>
+                    </choice>
+                </when>
+                <otherwise>
+                    <logger message="Account not present in SV" level="INFO" doc:name="Logger"/>
+                    <dw:transform-message doc:name="Transform Message">
+                        <dw:set-payload><![CDATA[%dw 1.0
+%output application/csv
+---
+[{
+	"Order Number": flowVars.orders[0].Name,
+	"Status" : "Error",
+	"Error": "Sterivision Billing not checked"
+}]]]></dw:set-payload>
+                    </dw:transform-message>
+                    <file:outbound-endpoint path="D:/" outputPattern="#[server.dateTime.format('yyMMddHHmmssZ')].csv" connector-ref="File" responseTimeout="10000" doc:name="File"/>
+                </otherwise>
+            </choice>
+        </foreach>
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <set-variable variableName="exception" value="#[exception.message]" doc:name="Variable"/>
+        <dw:transform-message doc:name="Transform Message">
+                        <dw:set-payload><![CDATA[%dw 1.0
+%output application/csv
+---
+[{
+	"Order Number": flowVars.orders.Name[0],
+	"Status" : "Error",
+	"Error": flowVars.exception
+}]]]></dw:set-payload>
+                    </dw:transform-message>
+                    <file:outbound-endpoint path="D:\Upwork\hemanth\service_order\op" outputPattern="#[server.dateTime.format('yyMMddHHmmssZ')].csv" connector-ref="File" responseTimeout="10000" doc:name="File" metadata:id="c0508b35-fa89-4e0c-8f44-b4e390ffdda8"/>
+        </catch-exception-strategy>
+    </flow>
+    <sub-flow name="service-ordersSub_Flow_Manifest">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Manifest_ID__c,Work_Order__c FROM Manifest__c" doc:name="Salesforce"/>
+    </sub-flow>
+    <sub-flow name="revenue-location-details">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Accounting_Location__c FROM Revenue_Location__c WHERE Id = '#[flowVars.messageRootVar.Revenue_Location__c]'" doc:name="Salesforce"/>
+        <set-variable variableName="revenueLocation" value="#[payload]" doc:name="Variable-revenueLocation"/>
+    </sub-flow>
+    <sub-flow name="service-ordersSub_Flow_Profile">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Name,Waste_Name__c FROM Profile__c" doc:name="Salesforce"/>
+    </sub-flow>
+    <sub-flow name="service-ordersSub_Flow_Customer">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT AX_Customer_Id__c,Id FROM Dynamics_AX_Customer__c " doc:name="Salesforce"/>
+
+    </sub-flow>
+    <sub-flow name="fetch-product-details-by-id">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Id,Name,ProductCode,Taxable__c FROM Product2 WHERE id = '#[payload[0].SVMXC__Product__c]'" doc:name="Salesforce"/>
+        <set-variable variableName="productDetails" value="#[payload]" doc:name="Variable-productDetailsId"/>
+    </sub-flow>
+    <sub-flow name="service-ordersSub_Price">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Description__c,Price__c,Product_Family__c,Product_Name__c FROM Price_Book_Entry__c" doc:name="Salesforce"/>
+    </sub-flow>
+    <sub-flow name="service-ordersSub_Flow_Account">
+        <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT Dynamics_AX_Customer_Number__c,Sterivision_Billing__c, E_I__c,Id,Name FROM Account WHERE Id = '#[payload.Customer_Account__c]' and Sterivision_Billing__c = true" doc:name="Salesforce"/>
+        <set-payload value="#[org.apache.commons.collections.IteratorUtils.toList(payload)]" doc:name="Set Payload"/>
+
+
+    </sub-flow>
+</mule>
